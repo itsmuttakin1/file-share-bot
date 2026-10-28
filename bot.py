@@ -11,15 +11,14 @@ from telebot import types
 # --- কনফিগারেশন ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 VERIFY_URL = "https://urlbit.pro/wVLnd"
-CHANNEL_LINK = "https://t.me/+L97S6UnnMdg3ZTE1"  # আপনার টেলিগ্রাম চ্যানেল লিঙ্ক
+CHANNEL_LINK = "https://t.me/+L97S6UnnMdg3ZTE1"
 DB_NAME = "files.db"
 
-# অ্যাডমিন আইডি
 ADMIN_ID = 5140546628
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 
-# ইউজার কখন ভেরিফাই শুরু করেছে তা ট্র্যাকিং করার ডিকশনারি
+# ইউজার ট্র্যাকার
 verification_tracker = {}
 
 # --- ডাটাবেস হ্যান্ডলার (SQLite3) ---
@@ -39,7 +38,15 @@ def init_db():
         )
     """)
     
-    # বটের সেটিংস টেবিল (টাইম স্টোর করার জন্য)
+    # ইউজার ট্র্যাকিং টেবিল (অ্যাক্টিভ ইউজার ও ব্রডকাস্টের জন্য)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            last_active REAL NOT NULL
+        )
+    """)
+    
+    # বটের সেটিংস টেবিল
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -47,11 +54,48 @@ def init_db():
         )
     """)
     
-    # ডিফল্ট সময় ১০ সেকেন্ড সেট করা যদি না থাকে
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('wait_seconds', '10')")
     
     conn.commit()
     conn.close()
+
+def log_user(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO users (user_id, last_active) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_active = ?",
+        (user_id, time.time(), time.time())
+    )
+    conn.commit()
+    conn.close()
+
+def get_stats():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # টোটাল ইউজার
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+    
+    # অ্যাক্টিভ ইউজার (গত ২৪ ঘণ্টায় সক্রিয়)
+    one_day_ago = time.time() - 86400
+    cursor.execute("SELECT COUNT(*) FROM users WHERE last_active >= ?", (one_day_ago,))
+    active_users = cursor.fetchone()[0]
+    
+    # টোটাল ফাইল
+    cursor.execute("SELECT COUNT(*) FROM files")
+    total_files = cursor.fetchone()[0]
+    
+    conn.close()
+    return total_users, active_users, total_files
+
+def get_all_user_ids():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    rows = cursor.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
 
 def get_wait_seconds():
     conn = sqlite3.connect(DB_NAME)
@@ -59,9 +103,7 @@ def get_wait_seconds():
     cursor.execute("SELECT value FROM settings WHERE key = 'wait_seconds'")
     row = cursor.fetchone()
     conn.close()
-    if row:
-        return int(row[0])
-    return 10
+    return int(row[0]) if row else 10
 
 def set_wait_seconds(seconds):
     conn = sqlite3.connect(DB_NAME)
@@ -111,7 +153,7 @@ def generate_random_id(length=8):
     characters = string.ascii_letters + string.digits
     return ''.join(secrets.choice(characters) for _ in range(length))
 
-# --- Flask Server (Render Keep-Alive) ---
+# --- Flask Server ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -122,7 +164,6 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# মেনু তৈরির ফাংশন
 def main_menu_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_upload = types.InlineKeyboardButton("📤 Upload File", callback_data="upload_mode")
@@ -138,6 +179,7 @@ def handle_admin(message):
         return
 
     current_wait = get_wait_seconds()
+    total_users, active_users, total_files = get_stats()
     
     markup = types.InlineKeyboardMarkup(row_width=3)
     btn_5 = types.InlineKeyboardButton("5s", callback_data="set_time_5")
@@ -147,17 +189,25 @@ def handle_admin(message):
     btn_30 = types.InlineKeyboardButton("30s", callback_data="set_time_30")
     btn_custom = types.InlineKeyboardButton("✏️ Custom Time", callback_data="set_custom_time")
     
+    btn_broadcast = types.InlineKeyboardButton("📢 Send Broadcast", callback_data="start_broadcast")
+    btn_refresh = types.InlineKeyboardButton("🔄 Refresh Stats", callback_data="refresh_admin")
+    
     markup.add(btn_5, btn_10, btn_15)
-    markup.add(btn_20, btn_30)
-    markup.add(btn_custom)
+    markup.add(btn_20, btn_30, btn_custom)
+    markup.add(btn_broadcast)
+    markup.add(btn_refresh)
 
     admin_text = (
         "⚙️ **Admin Control Panel**\n\n"
-        f"⏱ **বর্তমান ভেরিফিকেশন ওয়েটিং টাইম:** `{current_wait}` সেকেন্ড\n\n"
-        "বাটন চেপে সময় পরিবর্তন করতে পারেন অথবা কাস্টম সময় দিতে পারেন:"
+        f"👥 **মোট ইউজার:** `{total_users}` জন\n"
+        f"🟢 **সক্রিয় ইউজার (২৪ ঘণ্টা):** `{active_users}` জন\n"
+        f"📂 **মোট আপলোড করা ফাইল:** `{total_files}` টি\n"
+        f"⏱ **বর্তমান ওয়েটিং টাইম:** `{current_wait}` সেকেন্ড\n\n"
+        "টাইম পরিবর্তন বা ব্রডকাস্ট পাঠাতে নিচের বাটন ব্যবহার করুন:"
     )
     bot.send_message(message.chat.id, admin_text, reply_markup=markup)
 
+# কাস্টম টাইম প্রসেসর
 def process_custom_time(message):
     if message.from_user.id != ADMIN_ID:
         return
@@ -172,13 +222,49 @@ def process_custom_time(message):
     except ValueError:
         bot.reply_to(message, "❌ অবৈধ ইনপুট! শুধু সংখ্যা (যেমন: 15, 25) লিখুন।")
 
+# ব্রডকাস্ট এক্সিকিউটর
+def process_broadcast(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    if message.text and message.text.lower() == "/cancel":
+        bot.reply_to(message, "❌ ব্রডকাস্ট বাতিল করা হয়েছে।")
+        return
+
+    users = get_all_user_ids()
+    if not users:
+        bot.reply_to(message, "📭 ব্রডকাস্ট করার মতো কোনো ইউজার পাওয়া যায়নি।")
+        return
+
+    status_msg = bot.reply_to(message, f"🚀 ব্রডকাস্ট শুরু হচ্ছে... মোট ইউজার: {len(users)}")
+    
+    success = 0
+    blocked = 0
+
+    for u_id in users:
+        try:
+            bot.copy_message(chat_id=u_id, from_chat_id=message.chat.id, message_id=message.message_id)
+            success += 1
+            time.sleep(0.04)  # টেলিগ্রাম রেট লিমিট এড়াতে
+        except Exception:
+            blocked += 1
+
+    report_text = (
+        "📢 **ব্রডকাস্ট সম্পন্ন হয়েছে!**\n\n"
+        f"✅ **সফলভাবে গেছে:** `{success}` জনের কাছে\n"
+        f"❌ **ফেইল্ড/ব্লক করেছে:** `{blocked}` জন"
+    )
+    bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg.message_id, text=report_text)
+
 # --- /start কমান্ড হ্যান্ডলার ---
 @bot.message_handler(commands=['start'])
 def handle_start(message):
-    text_data = message.text.split()
     user_id = message.from_user.id
+    log_user(user_id)  # ইউজার ডাটাবেসে সেভ ও অ্যাক্টিভ টাইম রেকর্ড
     
-    # ইউজার যদি শেয়ার লিঙ্ক দিয়ে আসে (/start <unique_id>)
+    text_data = message.text.split()
+    
+    # শেয়ার লিঙ্ক হ্যান্ডলিং
     if len(text_data) > 1:
         unique_id = text_data[1]
         file_info = get_file(unique_id)
@@ -187,7 +273,6 @@ def handle_start(message):
             current_wait = get_wait_seconds()
             verification_tracker[(user_id, unique_id)] = time.time()
             
-            # ৩টি বাটন: Step 1 (Channel), Step 2 (Link), Step 3 (Verify button)
             markup = types.InlineKeyboardMarkup()
             btn_channel = types.InlineKeyboardButton("📢 Step 1: চ্যানেলে জয়েন করুন", url=CHANNEL_LINK)
             btn_link = types.InlineKeyboardButton("🔗 Step 2: এই লিঙ্কে যান", url=VERIFY_URL)
@@ -213,7 +298,7 @@ def handle_start(message):
             bot.send_message(message.chat.id, "❌ ফাইলটি খুঁজে পাওয়া যায়নি অথবা লিঙ্কটির মেয়াদ শেষ।")
             return
 
-    # সাধারণ হোম মেনু
+    # হোম মেনু
     bot.send_message(
         chat_id=message.chat.id,
         text=(
@@ -230,24 +315,66 @@ def handle_callbacks(call):
     chat_id = call.message.chat.id
     message_id = call.message.message_id
     data = call.data
+    
+    log_user(user_id)
 
-    # অ্যাডমিন টাইম পরিবর্তন বাটন
-    if data.startswith("set_time_"):
+    # অ্যাডমিন রিফ্রেশ
+    if data == "refresh_admin":
+        if user_id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "অনুমতি নেই!", show_alert=True)
+            return
+        bot.answer_callback_query(call.id, "স্ট্যাটাস আপডেট করা হয়েছে!")
+        current_wait = get_wait_seconds()
+        total_users, active_users, total_files = get_stats()
+        
+        markup = call.message.reply_markup
+        admin_text = (
+            "⚙️ **Admin Control Panel**\n\n"
+            f"👥 **মোট ইউজার:** `{total_users}` জন\n"
+            f"🟢 **সক্রিয় ইউজার (২৪ ঘণ্টা):** `{active_users}` জন\n"
+            f"📂 **মোট আপলোড করা ফাইল:** `{total_files}` টি\n"
+            f"⏱ **বর্তমান ওয়েটিং টাইম:** `{current_wait}` সেকেন্ড\n\n"
+            "টাইম পরিবর্তন বা ব্রডকাস্ট পাঠাতে নিচের বাটন ব্যবহার করুন:"
+        )
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=admin_text, reply_markup=markup)
+        return
+
+    # ব্রডকাস্ট শুরু
+    elif data == "start_broadcast":
+        if user_id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "অনুমতি নেই!", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        msg = bot.send_message(
+            chat_id,
+            "📝 **ব্রডকাস্ট করতে চাওয়া মেসেজটি এখানে সেন্ড করুন:**\n\n"
+            "(টেক্সট, ছবি, ভিডিও বা ফরোয়ার্ড করা মেসেজ দিতে পারেন। বাতিল করতে `/cancel` লিখুন)"
+        )
+        bot.register_next_step_handler(msg, process_broadcast)
+        return
+
+    # টাইম বাটন
+    elif data.startswith("set_time_"):
         if user_id != ADMIN_ID:
             bot.answer_callback_query(call.id, "অনুমতি নেই!", show_alert=True)
             return
         new_time = int(data.split("_")[2])
         set_wait_seconds(new_time)
         bot.answer_callback_query(call.id, f"টাইম {new_time} সেকেন্ড করা হয়েছে!", show_alert=True)
-        bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=f"⚙️ **Admin Control Panel**\n\n✅ নতুন সময়: **{new_time}** সেকেন্ড নির্ধারণ করা হয়েছে।",
-            reply_markup=call.message.reply_markup
+        
+        total_users, active_users, total_files = get_stats()
+        admin_text = (
+            "⚙️ **Admin Control Panel**\n\n"
+            f"👥 **মোট ইউজার:** `{total_users}` জন\n"
+            f"🟢 **সক্রিয় ইউজার (২৪ ঘণ্টা):** `{active_users}` জন\n"
+            f"📂 **মোট আপলোড করা ফাইল:** `{total_files}` টি\n"
+            f"⏱ **বর্তমান ওয়েটিং টাইম:** `{new_time}` সেকেন্ড\n\n"
+            f"✅ **নতুন সময় সফলভাবে সেট করা হয়েছে!**"
         )
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=admin_text, reply_markup=call.message.reply_markup)
         return
 
-    # কাস্টম টাইম প্রম্পট
+    # কাস্টম টাইম
     elif data == "set_custom_time":
         if user_id != ADMIN_ID:
             bot.answer_callback_query(call.id, "অনুমতি নেই!", show_alert=True)
@@ -279,7 +406,7 @@ def handle_callbacks(call):
             reply_markup=main_menu_keyboard()
         )
 
-    # মাই ফাইলস লিস্ট
+    # মাই ফাইলস
     elif data == "my_files":
         bot.answer_callback_query(call.id)
         files = get_user_files(user_id)
@@ -358,7 +485,7 @@ def handle_callbacks(call):
             reply_markup=markup
         )
 
-    # ভেরিফিকেশন ও ডেলিভারি
+    # ভেরিফিকেশন ও ফাইল ডেলিভারি
     elif data.startswith("verify_"):
         unique_id = data.split("_")[1]
         file_info = get_file(unique_id)
@@ -411,6 +538,8 @@ def handle_callbacks(call):
 @bot.message_handler(content_types=['video', 'document', 'photo', 'audio'])
 def handle_files(message):
     user_id = message.from_user.id
+    log_user(user_id)
+    
     file_id = None
     file_type = None
     file_name = "Shared File"

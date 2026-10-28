@@ -11,6 +11,7 @@ from telebot import types
 # --- কনফিগারেশন ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 VERIFY_URL = "https://urlbit.pro/wVLnd"
+CHANNEL_LINK = "https://t.me/+L97S6UnnMdg3ZTE1"  # আপনার টেলিগ্রাম চ্যানেল লিঙ্ক
 DB_NAME = "files.db"
 
 # অ্যাডমিন আইডি
@@ -153,11 +154,10 @@ def handle_admin(message):
     admin_text = (
         "⚙️ **Admin Control Panel**\n\n"
         f"⏱ **বর্তমান ভেরিফিকেশন ওয়েটিং টাইম:** `{current_wait}` সেকেন্ড\n\n"
-        "নিচের বাটন চেপে সময় পরিবর্তন করতে পারেন অথবা কাস্টম সময় দিতে পারেন:"
+        "বাটন চেপে সময় পরিবর্তন করতে পারেন অথবা কাস্টম সময় দিতে পারেন:"
     )
     bot.send_message(message.chat.id, admin_text, reply_markup=markup)
 
-# কাস্টম টাইম ইনপুট নেওয়ার প্রসেস
 def process_custom_time(message):
     if message.from_user.id != ADMIN_ID:
         return
@@ -178,7 +178,7 @@ def handle_start(message):
     text_data = message.text.split()
     user_id = message.from_user.id
     
-    # ইউজার যদি কোনো শেয়ার লিঙ্ক নিয়ে আসে (/start <unique_id>)
+    # ইউজার যদি শেয়ার লিঙ্ক দিয়ে আসে (/start <unique_id>)
     if len(text_data) > 1:
         unique_id = text_data[1]
         file_info = get_file(unique_id)
@@ -187,19 +187,23 @@ def handle_start(message):
             current_wait = get_wait_seconds()
             verification_tracker[(user_id, unique_id)] = time.time()
             
+            # ৩টি বাটন: Step 1 (Channel), Step 2 (Link), Step 3 (Verify button)
             markup = types.InlineKeyboardMarkup()
-            btn_link = types.InlineKeyboardButton("🔗 ১. এই লিঙ্কে যান", url=VERIFY_URL)
-            btn_verify = types.InlineKeyboardButton(f"✅ ২. {current_wait} সেকেন্ড পর ফাইল নিন", callback_data=f"verify_{unique_id}")
+            btn_channel = types.InlineKeyboardButton("📢 Step 1: চ্যানেলে জয়েন করুন", url=CHANNEL_LINK)
+            btn_link = types.InlineKeyboardButton("🔗 Step 2: এই লিঙ্কে যান", url=VERIFY_URL)
+            btn_verify = types.InlineKeyboardButton(f"✅ {current_wait} সেকেন্ড পর ভিডিও নিন", callback_data=f"verify_{unique_id}")
+            
+            markup.add(btn_channel)
             markup.add(btn_link)
             markup.add(btn_verify)
             
             bot.send_message(
                 chat_id=message.chat.id,
                 text=(
-                    "⚠️ **ভিডিও বা ফাইলটি পেতে নিচের নিয়মে সম্পন্ন করুন:**\n\n"
-                    f"১. প্রথমে [এখানে ক্লিক করে লিঙ্কে যান]({VERIFY_URL})\n"
-                    f"২. লিঙ্কে গিয়ে কমপক্ষে **{current_wait} সেকেন্ড** অপেক্ষা করুন।\n"
-                    f"৩. অপেক্ষা শেষ হলে নিচের **'{current_wait} সেকেন্ড পর ফাইল নিন'** বাটনে চাপ দিন।",
+                    "⚠️ **ভিডিও পেতে নিচের ধাপগুলো সম্পন্ন করুন:**\n\n"
+                    f"১. প্রথমে [আমাদের চ্যানেলে জয়েন করুন]({CHANNEL_LINK})\n"
+                    f"২. এরপর [এই লিঙ্কে ক্লিক করুন]({VERIFY_URL}) এবং কমপক্ষে **{current_wait} সেকেন্ড** অপেক্ষা করুন।\n"
+                    f"৩. সময় শেষ হলে নিচে **'{current_wait} সেকেন্ড পর ভিডিও নিন'** বাটনে চাপ দিন।",
                 ),
                 reply_markup=markup,
                 disable_web_page_preview=True
@@ -253,7 +257,7 @@ def handle_callbacks(call):
         bot.register_next_step_handler(msg, process_custom_time)
         return
 
-    # ১. আপলোড মোড
+    # আপলোড মোড
     elif data == "upload_mode":
         bot.answer_callback_query(call.id)
         markup = types.InlineKeyboardMarkup()
@@ -265,7 +269,7 @@ def handle_callbacks(call):
             reply_markup=markup
         )
 
-    # ২. মেনুতে ব্যাক
+    # মেনুতে ব্যাক
     elif data == "back_to_menu":
         bot.answer_callback_query(call.id)
         bot.edit_message_text(
@@ -275,7 +279,7 @@ def handle_callbacks(call):
             reply_markup=main_menu_keyboard()
         )
 
-    # ৩. মাই ফাইলস লিস্ট
+    # মাই ফাইলস লিস্ট
     elif data == "my_files":
         bot.answer_callback_query(call.id)
         files = get_user_files(user_id)
@@ -306,7 +310,7 @@ def handle_callbacks(call):
             reply_markup=markup
         )
 
-    # ৪. নির্দিষ্ট ফাইল ম্যানেজ করা
+    # ফাইল ম্যানেজ
     elif data.startswith("manage_"):
         unique_id = data.split("_")[1]
         file_info = get_file(unique_id)
@@ -331,7 +335,7 @@ def handle_callbacks(call):
         )
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=markup)
 
-    # ৫. ফাইল ডিলিট
+    # ফাইল ডিলিট
     elif data.startswith("del_"):
         unique_id = data.split("_")[1]
         success = delete_user_file(unique_id, user_id)
@@ -354,7 +358,7 @@ def handle_callbacks(call):
             reply_markup=markup
         )
 
-    # ৬. ভেরিফিকেশন ও ডেলিভারি (ডায়নামিক টাইম চেকার)
+    # ভেরিফিকেশন ও ডেলিভারি
     elif data.startswith("verify_"):
         unique_id = data.split("_")[1]
         file_info = get_file(unique_id)
@@ -371,7 +375,7 @@ def handle_callbacks(call):
             verification_tracker[(user_id, unique_id)] = now
             bot.answer_callback_query(
                 call.id,
-                f"⏳ অনুগ্রহ করে লিঙ্কে প্রবেশ করে {current_wait} সেকেন্ড অপেক্ষা করুন!",
+                f"⏳ অনুগ্রহ করে ধাপগুলো সম্পন্ন করে {current_wait} সেকেন্ড অপেক্ষা করুন!",
                 show_alert=True
             )
             return
@@ -386,7 +390,7 @@ def handle_callbacks(call):
             )
             return
 
-        bot.answer_callback_query(call.id, "✅ ভেরিফিকেশন সফল! ফাইল পাঠানো হচ্ছে...")
+        bot.answer_callback_query(call.id, "✅ ভেরিফিকেশন সফল! ভিডিও পাঠানো হচ্ছে...")
 
         file_id = file_info["file_id"]
         file_type = file_info["type"]
@@ -447,7 +451,7 @@ def handle_files(message):
         f"📂 **ফাইলের নাম:** `{file_name}`\n"
         "🔗 **শেয়ার লিঙ্ক (নিচের কোডে ক্লিক করলে কপি হবে):**\n"
         f"`{share_link}`\n\n"
-        "যেকেউ এই লিঙ্কে ক্লিক করলে নির্ধারিত সেকেন্ড অপেক্ষার পর ফাইল পাবে।"
+        "যেকেউ এই লিঙ্কে ক্লিক করলে চ্যানেল জয়েন ও লিঙ্কে অপেক্ষার পর ভিডিও পাবে।"
     )
 
     bot.reply_to(message, response_text, reply_markup=markup, disable_web_page_preview=True)

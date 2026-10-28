@@ -12,7 +12,9 @@ from telebot import types
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 VERIFY_URL = "https://urlbit.pro/wVLnd"
 DB_NAME = "files.db"
-REQUIRED_WAIT_SECONDS = 10  # লিঙ্কে যাওয়ার পর ন্যূনতম অপেক্ষার সময়
+
+# অ্যাডমিন আইডি
+ADMIN_ID = 5140546628
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 
@@ -23,7 +25,8 @@ verification_tracker = {}
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # user_id কলাম যোগ করা হয়েছে যাতে ইউজার নিজের ফাইল দেখতে পারে
+    
+    # ফাইল টেবিল
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS files (
             unique_id TEXT PRIMARY KEY,
@@ -34,6 +37,35 @@ def init_db():
             caption TEXT
         )
     """)
+    
+    # বটের সেটিংস টেবিল (টাইম স্টোর করার জন্য)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    
+    # ডিফল্ট সময় ১০ সেকেন্ড সেট করা যদি না থাকে
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('wait_seconds', '10')")
+    
+    conn.commit()
+    conn.close()
+
+def get_wait_seconds():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'wait_seconds'")
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return int(row[0])
+    return 10
+
+def set_wait_seconds(seconds):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE settings SET value = ? WHERE key = 'wait_seconds'", (str(seconds),))
     conn.commit()
     conn.close()
 
@@ -97,7 +129,50 @@ def main_menu_keyboard():
     markup.add(btn_upload, btn_my_files)
     return markup
 
-# --- কমান্ড হ্যান্ডলার ---
+# --- অ্যাডমিন প্যানেল (/ad) ---
+@bot.message_handler(commands=['ad', 'admin'])
+def handle_admin(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "⛔ আপনার এই প্যানেল ব্যবহারের অনুমতি নেই।")
+        return
+
+    current_wait = get_wait_seconds()
+    
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    btn_5 = types.InlineKeyboardButton("5s", callback_data="set_time_5")
+    btn_10 = types.InlineKeyboardButton("10s", callback_data="set_time_10")
+    btn_15 = types.InlineKeyboardButton("15s", callback_data="set_time_15")
+    btn_20 = types.InlineKeyboardButton("20s", callback_data="set_time_20")
+    btn_30 = types.InlineKeyboardButton("30s", callback_data="set_time_30")
+    btn_custom = types.InlineKeyboardButton("✏️ Custom Time", callback_data="set_custom_time")
+    
+    markup.add(btn_5, btn_10, btn_15)
+    markup.add(btn_20, btn_30)
+    markup.add(btn_custom)
+
+    admin_text = (
+        "⚙️ **Admin Control Panel**\n\n"
+        f"⏱ **বর্তমান ভেরিফিকেশন ওয়েটিং টাইম:** `{current_wait}` সেকেন্ড\n\n"
+        "নিচের বাটন চেপে সময় পরিবর্তন করতে পারেন অথবা কাস্টম সময় দিতে পারেন:"
+    )
+    bot.send_message(message.chat.id, admin_text, reply_markup=markup)
+
+# কাস্টম টাইম ইনপুট নেওয়ার প্রসেস
+def process_custom_time(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        new_seconds = int(message.text.strip())
+        if new_seconds < 0:
+            bot.reply_to(message, "❌ সময় ০ বা তার বেশি হতে হবে।")
+            return
+        
+        set_wait_seconds(new_seconds)
+        bot.reply_to(message, f"✅ সফলভাবে সময় পরিবর্তন করে **{new_seconds}** সেকেন্ড নির্ধারণ করা হয়েছে!")
+    except ValueError:
+        bot.reply_to(message, "❌ অবৈধ ইনপুট! শুধু সংখ্যা (যেমন: 15, 25) লিখুন।")
+
+# --- /start কমান্ড হ্যান্ডলার ---
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     text_data = message.text.split()
@@ -109,12 +184,12 @@ def handle_start(message):
         file_info = get_file(unique_id)
         
         if file_info:
-            # ভেরিফিকেশন শুরু হওয়ার সময় রেকর্ড করা
+            current_wait = get_wait_seconds()
             verification_tracker[(user_id, unique_id)] = time.time()
             
             markup = types.InlineKeyboardMarkup()
             btn_link = types.InlineKeyboardButton("🔗 ১. এই লিঙ্কে যান", url=VERIFY_URL)
-            btn_verify = types.InlineKeyboardButton("✅ ২. ১০ সেকেন্ড পর ফাইল নিন", callback_data=f"verify_{unique_id}")
+            btn_verify = types.InlineKeyboardButton(f"✅ ২. {current_wait} সেকেন্ড পর ফাইল নিন", callback_data=f"verify_{unique_id}")
             markup.add(btn_link)
             markup.add(btn_verify)
             
@@ -123,8 +198,8 @@ def handle_start(message):
                 text=(
                     "⚠️ **ভিডিও বা ফাইলটি পেতে নিচের নিয়মে সম্পন্ন করুন:**\n\n"
                     f"১. প্রথমে [এখানে ক্লিক করে লিঙ্কে যান]({VERIFY_URL})\n"
-                    f"২. লিঙ্কে গিয়ে কমপক্ষে **{REQUIRED_WAIT_SECONDS} সেকেন্ড** অপেক্ষা করুন।\n"
-                    "৩. অপেক্ষা শেষ হলে নিচের **'১০ সেকেন্ড পর ফাইল নিন'** বাটনে চাপ দিন।",
+                    f"২. লিঙ্কে গিয়ে কমপক্ষে **{current_wait} সেকেন্ড** অপেক্ষা করুন।\n"
+                    f"৩. অপেক্ষা শেষ হলে নিচের **'{current_wait} সেকেন্ড পর ফাইল নিন'** বাটনে চাপ দিন।",
                 ),
                 reply_markup=markup,
                 disable_web_page_preview=True
@@ -152,8 +227,34 @@ def handle_callbacks(call):
     message_id = call.message.message_id
     data = call.data
 
+    # অ্যাডমিন টাইম পরিবর্তন বাটন
+    if data.startswith("set_time_"):
+        if user_id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "অনুমতি নেই!", show_alert=True)
+            return
+        new_time = int(data.split("_")[2])
+        set_wait_seconds(new_time)
+        bot.answer_callback_query(call.id, f"টাইম {new_time} সেকেন্ড করা হয়েছে!", show_alert=True)
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=f"⚙️ **Admin Control Panel**\n\n✅ নতুন সময়: **{new_time}** সেকেন্ড নির্ধারণ করা হয়েছে।",
+            reply_markup=call.message.reply_markup
+        )
+        return
+
+    # কাস্টম টাইম প্রম্পট
+    elif data == "set_custom_time":
+        if user_id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "অনুমতি নেই!", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        msg = bot.send_message(chat_id, "⌨️ আপনি কত সেকেন্ড সেট করতে চান? শুধু সংখ্যাটি লিখে পাঠান (যেমন: 25):")
+        bot.register_next_step_handler(msg, process_custom_time)
+        return
+
     # ১. আপলোড মোড
-    if data == "upload_mode":
+    elif data == "upload_mode":
         bot.answer_callback_query(call.id)
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu"))
@@ -205,7 +306,7 @@ def handle_callbacks(call):
             reply_markup=markup
         )
 
-    # ৪. নির্দিষ্ট ফাইল ম্যানেজ করা (লিঙ্ক কপি ও ডিলিট বাটন)
+    # ৪. নির্দিষ্ট ফাইল ম্যানেজ করা
     elif data.startswith("manage_"):
         unique_id = data.split("_")[1]
         file_info = get_file(unique_id)
@@ -230,7 +331,7 @@ def handle_callbacks(call):
         )
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=markup)
 
-    # ৫. ফাইল ডিলিট কনফার্মেশন
+    # ৫. ফাইল ডিলিট
     elif data.startswith("del_"):
         unique_id = data.split("_")[1]
         success = delete_user_file(unique_id, user_id)
@@ -240,7 +341,6 @@ def handle_callbacks(call):
         else:
             bot.answer_callback_query(call.id, "❌ ফাইলটি ডিলিট করা সম্ভব হয়নি।", show_alert=True)
 
-        # ডিলিট শেষে আবার My Files পেজ দেখানো
         files = get_user_files(user_id)
         markup = types.InlineKeyboardMarkup()
         for u_id, f_type, f_name in files:
@@ -254,7 +354,7 @@ def handle_callbacks(call):
             reply_markup=markup
         )
 
-    # ৬. ভেরিফিকেশন ও ফাইল ডেলিভারি (১০ সেকেন্ড চেকার)
+    # ৬. ভেরিফিকেশন ও ডেলিভারি (ডায়নামিক টাইম চেকার)
     elif data.startswith("verify_"):
         unique_id = data.split("_")[1]
         file_info = get_file(unique_id)
@@ -263,23 +363,22 @@ def handle_callbacks(call):
             bot.answer_callback_query(call.id, "ফাইলটি আর নেই!", show_alert=True)
             return
 
-        # ইউজার কখন ভেরিফিকেশন শুরু করেছিল তা যাচাই
+        current_wait = get_wait_seconds()
         start_time = verification_tracker.get((user_id, unique_id))
-        current_time = time.time()
+        now = time.time()
 
         if not start_time:
-            # প্রথমবার ট্র্যাকার রেকর্ড করে ১০ সেকেন্ড কাউন্ট শুরু
-            verification_tracker[(user_id, unique_id)] = current_time
+            verification_tracker[(user_id, unique_id)] = now
             bot.answer_callback_query(
                 call.id,
-                f"⏳ অনুগ্রহ করে লিঙ্কে প্রবেশ করে {REQUIRED_WAIT_SECONDS} সেকেন্ড অপেক্ষা করুন!",
+                f"⏳ অনুগ্রহ করে লিঙ্কে প্রবেশ করে {current_wait} সেকেন্ড অপেক্ষা করুন!",
                 show_alert=True
             )
             return
 
-        elapsed = current_time - start_time
-        if elapsed < REQUIRED_WAIT_SECONDS:
-            remaining = int(REQUIRED_WAIT_SECONDS - elapsed)
+        elapsed = now - start_time
+        if elapsed < current_wait:
+            remaining = int(current_wait - elapsed)
             bot.answer_callback_query(
                 call.id,
                 f"⏳ দয়া করে আরও {remaining} সেকেন্ড অপেক্ষা করে আবার চাপ দিন!",
@@ -287,7 +386,6 @@ def handle_callbacks(call):
             )
             return
 
-        # ১০ সেকেন্ড সফলভাবে অতিবাহিত হলে ফাইল পাঠানো
         bot.answer_callback_query(call.id, "✅ ভেরিফিকেশন সফল! ফাইল পাঠানো হচ্ছে...")
 
         file_id = file_info["file_id"]
@@ -303,7 +401,6 @@ def handle_callbacks(call):
         elif file_type == "audio":
             bot.send_audio(chat_id, file_id, caption=caption)
 
-        # ট্র্যাকার থেকে মুছে ফেলা
         verification_tracker.pop((user_id, unique_id), None)
 
 # --- ফাইল গ্রহণ ও সংরক্ষণ ---
@@ -337,7 +434,6 @@ def handle_files(message):
     unique_id = generate_random_id()
     caption = message.caption or ""
 
-    # ডাটাবেসে সেভ
     save_file(unique_id, user_id, file_id, file_type, file_name, caption)
 
     bot_info = bot.get_me()
@@ -351,7 +447,7 @@ def handle_files(message):
         f"📂 **ফাইলের নাম:** `{file_name}`\n"
         "🔗 **শেয়ার লিঙ্ক (নিচের কোডে ক্লিক করলে কপি হবে):**\n"
         f"`{share_link}`\n\n"
-        "যেকেউ এই লিঙ্কে ক্লিক করলে ১০ সেকেন্ড অপেক্ষার পর ফাইল পাবে।"
+        "যেকেউ এই লিঙ্কে ক্লিক করলে নির্ধারিত সেকেন্ড অপেক্ষার পর ফাইল পাবে।"
     )
 
     bot.reply_to(message, response_text, reply_markup=markup, disable_web_page_preview=True)
@@ -360,14 +456,13 @@ def handle_files(message):
 if __name__ == "__main__":
     init_db()
 
-    # Flask ব্যাকগ্রাউন্ড থ্রেড
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    print(">>> Flask server is running.")
+    print(">>> Flask server running.")
     bot_info = bot.get_me()
-    print(f">>> Telegram Bot is ONLINE: @{bot_info.username}")
+    print(f">>> Telegram Bot ONLINE: @{bot_info.username}")
 
     bot.remove_webhook()
     bot.infinity_polling(skip_pending=True)
